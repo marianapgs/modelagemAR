@@ -1,0 +1,222 @@
+
+#-----------------------------------
+# Ajuste de Modelo Logistico #
+#  TESTEMUNHA AR(1) - PRIORI NI #
+#-------------------------------------
+#Pacotes
+# Lista de pacotes necessarios
+pacotes <- c("R2OpenBUGS", "coda")
+
+# Verifica se cada pacote está instalado e instala caso não esteja
+for (pacote in pacotes) {
+  if (!requireNamespace(pacote, quietly = TRUE)) {
+    install.packages(pacote)
+  }
+  library(pacote, character.only = TRUE)
+}
+
+#Carregando pacotes
+library(R2OpenBUGS)
+library(coda)
+
+# Diretorio
+setwd() #caminho da pasta do arquivo
+
+#Leitura do banco de dados csv com a disposicao AR1
+dados<- read.csv(file = "Testemunha AR1.csv",header = T, dec=".",sep = ",");dados
+attach(dados)
+plot(x1,y1,xlab= "Dias", ylab= "Crescimento Micelial",pch=16) #grafico de dispersao dos dados experimentais
+
+#utilizando o pacote R2OpenBUGS#
+sink("Testemunha_AR1.txt") #nome do modelo openbugs
+cat("
+model{
+  for( i in 1 : N ) {
+    y1[i] ~ dnorm(mu[i], tau2)
+    mu[i] <- beta1/(1+exp(-beta3*(x1[i]-beta2)))+P1*e1_b1[i] #modelo logistico com estrutura AR(1) dos erros
+  }
+  #Prioris não informativas
+  beta1 ~ dnorm(0.0, 0.0001)
+  beta2  ~ dnorm(0.0, 0.0001)
+  beta3 ~ dnorm(0.0, 0.0001)
+  tau2  ~ dgamma(0.1, 0.001)
+
+  #Parametro phi
+  P1 ~ dunif(-1,1)
+  
+  sigma2<- 1/tau2
+  for( i in 1 : N ) {
+
+    #valores preditos
+    yp[i] <- beta1/(1+exp(-beta3*(x1[i]-beta2)))+P1*e1_b1[i]
+    d[i]<- yp[i]-y1[i]
+    d2[i]<- d[i]*d[i]
+    dr[i]<- d[i]/y1[i]
+  }
+
+syp2<-pow(sd(yp[]),2)  
+R2B <- syp2/(syp2+sigma2)
+EQM<- sum(d2[])/N #erro quadratico medio
+VMR<- abs(sum(dr[])*100/N) #modulo do vies medio relativo
+
+}
+",fill=TRUE)
+sink()
+
+N     = length(x1) #tamanho da covariavel x
+data  =  list("x1","y1","N","e1_b1") #dados
+inits =  function(){
+  list(beta1=75,beta2=3,beta3=1,P1=0,tau2=1) #valores iniciais
+}
+
+theta<-c("beta1","beta2","beta3","P1","tau2")
+
+nonlinear.test = bugs(data,inits,
+                     model.file="Testemunha_AR1.txt", #modelo openbugs
+                     parameters=c(theta,"yp","R2B","EQM","VMR"), #parametros da saida
+                     n.chains=1,n.iter=100000,n.burnin=80000,n.thin=100, #configuracaoes das cadeias
+                     codaPkg=FALSE, debug=T) #comando codaPkg=FALSE para salvar as medias do y predito em um objeto
+                     #dubug=T mostra a janela para verificar se o modelo esta correto e em andamento
+
+#Cadeia a posteriori
+post.test<-as.mcmc(nonlinear.test$sims.matrix[,]) # salva a saida como cadeia mcmc
+
+#Criterios de convergencia
+geweke.diag(post.test)
+raftery.diag(post.test)
+heidel.diag(post.test)
+
+#Graficos das cadeias a posteriori
+plot(post.test[,1:4]) #cadeias a posteriori
+test_b1<- plot(post.test[,1]) #parametro beta1
+test_b2<- plot(post.test[,2]) #parametro beta2
+test_b3<- plot(post.test[,3]) #paramentro beta3
+
+#Histograma das posterioris
+par(mfrow=c(2,2))
+hist(post.test[,1],main = "Posteriori Beta 1")
+hist(post.test[,2],main = "Posteriori Beta 2")
+hist(post.test[,3],main = "Posteriori Beta 3")
+hist(post.test[,4],main = "Posteriori tau")
+
+#Intevalo HPD de 95% (default)
+HPDinterval(post.test)
+
+# salva a resumo da cadeia mcmc com 4 digitos
+resumo=print(nonlinear.test ,dig=4)
+
+#Valores preditos
+ypredl<-resumo$mean$yp 
+
+#Residuos
+resid_predl=ypredl-y1
+
+#EQM sem geracao de cadeia
+np<-length(ypredl)
+EQP=sum(resid_predl^2)/np;EQP #presenca de NA
+
+#Vies medio relativo sem geracao de cadeia
+VMR<- abs(sum(resid_predl,na.rm = T)*100/np);VMR
+
+# CV (%)
+cv_b1<- (resumo$sd$beta1/resumo$mean$beta1)*100;cv_b1
+cv_b2<- (resumo$sd$beta2/resumo$mean$beta2)*100;cv_b2
+cv_b3<- (resumo$sd$beta3/resumo$mean$beta3)*100;cv_b3
+
+#-----------------------------------------------------------------
+#   Grafico de residuos
+#-----------------------------------------------------------------
+#Residuos vs preditos
+plot(ypredl,resid_predl,pch=16, main="",ylab= "Residuos",xlab = "Valores Preditos")
+abline(h=0,lty=2,lwd=2,col="blue")
+
+#Residuos vs x
+plot(x1,resid_predl,pch=16, main="",ylab= "Residuos",xlab = "Tempo (dias)")
+abline(h=0,lty=2,lwd=2,col="blue")
+
+#Histograma dos residuos
+hist(resid_predl)
+
+#Graficos FAC e FACP
+acf(resid_predl,na.action = na.pass) #FAC
+pacf(resid_predl,na.action = na.pass) #FACP
+
+#Teste de independencia de Box-Pierce
+Box.test(resid_predl)
+
+#=============================================
+# Calcula Fator de Bayes para parametros AR
+#=============================================
+nc=length(post.test[,1]) 
+
+par5<- matrix(NA, nrow= nc)
+test_b1<-post.test[,1] #beta1
+test_b2<-post.test[,2] #beta2 
+test_b3<-post.test[,3] #beta3
+test_p1<-post.test[,5] #P1
+
+#Visualizacao das posterioris de cada parametro
+par(mfrow = c(1, 1))
+hist(test_b1, main = "Beta1")
+hist(test_b2, main = "Beta2")
+hist(test_b3, main = "Beta3")
+hist(test_p1, main = "P1")
+
+#loop que conta os valores das hipoteses na posteriori
+sim <- matrix(NA, nrow=nc)
+tetha0=0.0 #valor da hipotese verificada
+  for (j in 1 : nc) {
+    if (test_p1[j] <= tetha0) {
+      sim[j]<-1 # contando H0
+    }
+    else {
+      sim[j]<-0
+    }
+  }
+#---------------------------------------------------------
+Prob_H0=mean(sim); Prob_H0
+Prob_H1=1- Prob_H0;Prob_H1
+
+#------------------------------------------------------
+# Chance a priori (sempre verificar se favorece H0 ou H1)
+
+O_h1h0=Prob_H1/Prob_H0 #prob a posteriori a favor de H1
+O_h1h0
+
+O_h0h1=Prob_H0/Prob_H1 #prob a posteriori a favor de H0
+O_h0h1
+
+#-----------------------------------------------------------------
+# Curva final do ajuste
+#-----------------------------------------------------------------
+# Salvando os coeficientes estimados#
+test_b1=resumo$mean$beta1 #estimativa de beta1
+test_b2=resumo$mean$beta2 #estimativa de beta2
+test_b3=resumo$mean$beta3 #estimativa de beta3
+
+plot(x1,y1,pch=16,ylim=c(0,90),main="", xlab="Tempo (dias)", ylab="Crescimento micelial radial")
+curve(b1/(1+exp(-b3*(x1-b2))), from=0, to=100, add=T, col=2)
+
+#Utilizando ggplot
+library(ggplot2)
+
+test_x<- x1
+test_y<- y1
+
+# Função logística com os parâmetros definidos
+logistico <- function(x, b1, b2, b3) {
+  b1 / (1 + exp(-b3 * (x - b2)))
+}
+
+# Criar o gráfico de dispersão
+testemunha <- ggplot(dados, aes(x = test_x, y = test_y)) +
+  geom_point(color = "black", size = 2) +  # Gráfico de dispersão
+  stat_function(fun = logistico, args = list(b1 = test_b1, b2 = test_b2, b3 = test_b3), color = "red", size = 1.2) +  # Curva logística ajustada
+  labs(title = "Testemunha AR(1)",
+       x = "Tempo", y = "Crescimento Micelial Radial") +
+  scale_x_continuous(breaks = c(1:11)) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust =0.5))
+
+# Exibir o gráfico
+print(testemunha)
