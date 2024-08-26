@@ -1,0 +1,229 @@
+#-----------------------------------
+# Ajuste de Modelo Logistico #
+#  PATCHOULI AR(2) - PRIORI NI #
+#-------------------------------------
+#Pacotes
+# Lista de pacotes necessarios
+pacotes <- c("R2OpenBUGS", "coda")
+
+# Verifica se cada pacote está instalado e instala caso não esteja
+for (pacote in pacotes) {
+  if (!requireNamespace(pacote, quietly = TRUE)) {
+    install.packages(pacote)
+  }
+  library(pacote, character.only = TRUE)
+}
+
+#Carregando pacotes
+library(R2OpenBUGS)
+library(coda)
+
+# Diretorio
+setwd() #caminho da pasta do arquivo
+
+#Leitura do banco de dados csv com a disposicao AR2
+dados<- read.csv(file = "Patchouli AR2.csv",header = T, dec=".",sep = ",");dados
+attach(dados)
+plot(x2,y2,xlab= "Dias", ylab= "Crescimento Micelial",pch=16) #grafico de dispersao dos dados experimentais
+
+#utilizando o pacote R2OpenBUGS#
+sink("Patchouli_AR2.txt") #nome do modelo openbugs
+cat("
+model{
+  for( i in 1 : N ) {
+    y2[i] ~ dnorm(mu[i], tau2)
+    mu[i] <- beta1/(1+exp(-beta3*(x2[i]-beta2)))+P1*e1_b1[i]+P2*e2_b2[i] #modelo logistico com estrutura AR(2) dos erros
+  }
+  #Prioris não informativas
+  beta1 ~ dnorm(0.0, 0.0001)
+  beta2  ~ dnorm(0.0, 0.0001)
+  beta3 ~ dnorm(0.0, 0.0001)
+  tau2  ~ dgamma(0.1, 0.001)
+
+  #Parametros phi
+  P1 ~ dunif(-1,1)
+  P2 ~ dunif(-1,1)
+  
+  sigma2<- 1/tau2
+  for( i in 1 : N ) {
+
+    #valores preditos
+    yp[i] <- beta1/(1+exp(-beta3*(x2[i]-beta2)))+P1*e1_b1[i]+P2*e2_b2[i]
+    d[i]<- yp[i]-y2[i]
+    d2[i]<- d[i]*d[i]
+    dr[i]<- d[i]/y2[i]
+  }
+
+syp2<-pow(sd(yp[]),2)  
+R2B <- syp2/(syp2+sigma2)
+EQM<- sum(d2[])/N #erro quadratico medio
+VMR<- abs(sum(dr[])*100/N) #modulo do vies medio relativo
+
+}
+",fill=TRUE)
+sink()
+
+N     = length(x2) #tamanho da covariavel x
+data  =  list("x2","y2","N","e1_b1","e2_b2") #dados
+inits =  function(){
+  list(beta1=75,beta2=3,beta3=1,P1=0,P2=0,tau2=1) #valores iniciais
+}
+
+theta<-c("beta1","beta2","beta3","P1","P2","tau2")
+
+nonlinear.pat = bugs(data,inits,
+                     model.file="Patchouli_AR2.txt", #modelo openbugs
+                     parameters=c(theta,"yp","R2B","EQM","VMR"), #parametros da saida
+                     n.chains=1,n.iter=100000,n.burnin=80000,n.thin=100, #configuracaoes das cadeias
+                     codaPkg=FALSE, debug=T) #comando codaPkg=FALSE para salvar as medias do y predito em um objeto
+                     #dubug=T mostra a janela para verificar se o modelo esta correto e em andamento
+
+#Cadeia a posteriori
+post.pat<-as.mcmc(nonlinear.pat$sims.matrix[,]) # salva a saida como cadeia mcmc
+
+#Criterios de convergencia
+geweke.diag(post.pat)
+raftery.diag(post.pat)
+heidel.diag(post.pat)
+
+#Graficos das cadeias a posteriori
+plot(post.pat[,1:4]) #cadeias a posteriori
+pat_b1<- plot(post.pat[,1]) #parametro beta1
+pat_b2<- plot(post.pat[,2]) #parametro beta2
+pat_b3<- plot(post.pat[,3]) #paramentro beta3
+
+#Histograma das posterioris
+par(mfrow=c(2,2))
+hist(post.log[,1],main = "Posteriori Beta 1")
+hist(post.log[,2],main = "Posteriori Beta 2")
+hist(post.log[,3],main = "Posteriori Beta 3")
+hist(post.log[,4],main = "Posteriori tau")
+
+#Intevalo HPD de 95% (default)
+HPDinterval(post.pat)
+
+# salva a resumo da cadeia mcmc com 4 digitos
+resumo=print(nonlinear.pat ,dig=4)
+
+#Valores preditos
+ypredl<-resumo$mean$yp 
+
+#Residuos
+resid_predl=ypredl-y2
+
+#EQM sem geracao de cadeia
+np<-length(ypredl)
+EQP=sum(resid_predl^2)/np;EQP #presenca de NA
+
+#Vies medio relativo sem geracao de cadeia
+VMR<- abs(sum(resid_predl,na.rm = T)*100/np);VMR
+
+# CV (%)
+cv_b1<- (resumo$sd$beta1/resumo$mean$beta1)*100;cv_b1
+cv_b2<- (resumo$sd$beta2/resumo$mean$beta2)*100;cv_b2
+cv_b3<- (resumo$sd$beta3/resumo$mean$beta3)*100;cv_b3
+
+#-----------------------------------------------------------------
+#   Grafico de residuos
+#-----------------------------------------------------------------
+#Residuos vs preditos
+plot(ypredl,resid_predl,pch=16, main="",ylab= "Residuos",xlab = "Valores Preditos")
+abline(h=0,lty=2,lwd=2,col="blue")
+
+#Residuos vs x
+plot(x1,resid_predl,pch=16, main="",ylab= "Residuos",xlab = "Tempo (dias)")
+abline(h=0,lty=2,lwd=2,col="blue")
+
+#Histograma dos residuos
+hist(resid_predl)
+
+#Graficos FAC e FACP
+acf(resid_predl,na.action = na.pass) #FAC
+pacf(resid_predl,na.action = na.pass) #FACP
+
+#Teste de independencia de Box-Pierce
+Box.test(resid_predl)
+
+#=============================================
+# Calcula Fator de Bayes para parametros AR
+#=============================================
+nc=length(post.log[,1]) 
+
+par5<- matrix(NA, nrow= nc)
+pat_b1<-post.log[,1] #beta1
+pat_b2<-post.log[,2] #beta2 
+pat_b3<-post.log[,3] #beta3
+par5<-post.log[,5] #P1
+par6<-post.log[,6] #P2
+
+#Visualizacao das posterioris de cada parametro
+par(mfrow = c(1, 1))
+hist(par1, main = "Beta1")
+hist(par2, main = "Beta2")
+hist(par3, main = "Beta3")
+hist(par5, main = "P1")
+hist(par6, main = "P2")
+
+#loop que conta os valores das hipoteses na posteriori
+sim <- matrix(NA, nrow=nc)
+tetha0=0.0 #valor da hipotese verificada
+delta<- 
+  for (j in 1 : nc) {
+    if (par5[j] <= tetha0) {
+      sim[j]<-1 # contando H0
+    }
+    else {
+      sim[j]<-0
+    }
+  }
+#---------------------------------------------------------
+Prob_H0=mean(sim); Prob_H0
+Prob_H1=1- Prob_H0;Prob_H1
+
+#------------------------------------------------------
+# Chance a priori (sempre verificar se favorece H0 ou H1)
+
+O_h1h0=Prob_H1/Prob_H0 #prob a posteriori a favor de H1
+O_h1h0
+
+O_h0h1=Prob_H0/Prob_H1 #prob a posteriori a favor de H0
+O_h0h1
+
+#-----------------------------------------------------------------
+# Curva final do ajuste
+#-----------------------------------------------------------------
+# Salvando os coeficientes estimados#
+pat_b1=resumo$mean$beta1 #estimativa de beta1
+pat_b2=resumo$mean$beta2 #estimativa de beta2
+pat_b3=resumo$mean$beta3 #estimativa de beta3
+
+plot(x2,y2,pch=16,ylim=c(0,90),main="", xlab="Tempo (dias)", ylab="Crescimento micelial radial")
+curve(b1/(1+exp(-b3*(x-b2))), from=0, to=100, add=T, col=2)
+
+#Utilizando ggplot
+library(ggplot2)
+
+pat_x<- x2
+pat_y<- y2
+
+# Função logística com os parâmetros definidos
+logistico <- function(x, b1, b2, b3) {
+  b1 / (1 + exp(-b3 * (x - b2)))
+}
+
+# Criar o gráfico de dispersão
+patchouli <- ggplot(dados, aes(x = pat_x, y = pat_y)) +
+  geom_point(color = "black", size = 2) +  # Gráfico de dispersão
+  stat_function(fun = logistico, args = list(b1 = pat_b1, b2 = pat_b2, b3 = pat_b3), color = "red", size = 1.2) +  # Curva logística ajustada
+  labs(title = "Patchouli AR(2)",
+       x = "Tempo", y = "Crescimento Micelial Radial") +
+  scale_x_continuous(breaks = c(1:11)) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust =0.5))
+
+# Exibir o gráfico
+print(patchouli)
+
+
+
+
