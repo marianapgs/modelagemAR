@@ -131,7 +131,7 @@ plot(ypredl,resid_predl,pch=16, main="",ylab= "Residuos",xlab = "Valores Predito
 abline(h=0,lty=2,lwd=2,col="blue")
 
 #Residuos vs x
-plot(x1,resid_predl,pch=16, main="",ylab= "Residuos",xlab = "Tempo (dias)")
+plot(x2,resid_predl,pch=16, main="",ylab= "Residuos",xlab = "Tempo (dias)")
 abline(h=0,lty=2,lwd=2,col="blue")
 
 #Histograma dos residuos
@@ -167,7 +167,6 @@ hist(par6, main = "P2")
 #loop que conta os valores das hipoteses na posteriori
 sim <- matrix(NA, nrow=nc)
 tetha0=0.0 #valor da hipotese verificada
-delta<- 
   for (j in 1 : nc) {
     if (par5[j] <= tetha0) {
       sim[j]<-1 # contando H0
@@ -198,7 +197,7 @@ pat_b2=resumo$mean$beta2 #estimativa de beta2
 pat_b3=resumo$mean$beta3 #estimativa de beta3
 
 plot(x2,y2,pch=16,ylim=c(0,90),main="", xlab="Tempo (dias)", ylab="Crescimento micelial radial")
-curve(b1/(1+exp(-b3*(x-b2))), from=0, to=100, add=T, col=2)
+curve(b1/(1+exp(-b3*(x2-b2))), from=0, to=100, add=T, col=2)
 
 #Utilizando ggplot
 library(ggplot2)
