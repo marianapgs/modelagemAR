@@ -1,0 +1,253 @@
+#===========================================#
+# REAMOSTRAGEM DE CADA TAMANHO AMOSTRAL
+#===========================================#
+#       REAMOSTRAGEM PATCHOULI AR(2) 
+#       PRIORI INFORMATIVA LOGNORMAL
+#                  ZAGO
+#                   N=3
+#===========================================#
+#Pacotes
+# Lista de pacotes necessarios
+pacotes <- c("R2OpenBUGS", "coda")
+
+# Verifica se cada pacote está instalado e instala caso não esteja
+for (pacote in pacotes) {
+  if (!requireNamespace(pacote, quietly = TRUE)) {
+    install.packages(pacote)
+  }
+  library(pacote, character.only = TRUE)
+}
+
+#Carregando pacotes
+library(R2OpenBUGS)
+library(coda)
+
+#Diretorio
+setwd() #caminho da pasta do arquivo
+
+#Carregando banco de dados em csv
+dados<- read.csv("Patchouli AR2.csv",header = T, sep=",",dec=".");dados
+attach(dados)
+
+# Funcao que gera a matriz P de resultados dos ajustes  das ns reamostras
+simulac<- function(ns){
+  
+  P<-matrix(0,ns,91) #matriz de resultados
+  
+  #Sorteio das repeticoes das novas amostras
+  for (i in 1:ns) {
+    
+    n= 3 #tamanho da reamostra
+    # sorteio das repeticoes da reamostra
+    sorteio=sample(dados[1:9,1],n,replace = FALSE) ;sorteio #Sao 9 repeticoes do tratamento, com sorteio SEM REPOSICAO
+    reps<- matrix(sorteio,1,3);reps #n=3
+    #Data frame da nova amostra:
+    reamostra<- data.frame(rbind( dados[dados$rep == reps[,1],],dados[dados$rep == reps[,2],],dados[dados$rep == reps[,3],]));reamostra
+    
+    #Modelo OpenBUGS#    
+    sink("Patchouli_Inf.txt") #nome do modelo openbugs
+    cat("
+model{
+  for( i in 1 : N ) {
+    yr[i] ~ dnorm(mu[i], tau2)
+    mu[i] <- beta1/(1+exp(-beta3*(xr[i]-beta2)))+P1*e1_b1[i]+P2*e2_b2[i]
+  }
+#Prioris informativas
+  beta1 ~ dlnorm(4.322721,	2.2247175)
+  beta2  ~ dlnorm(1.648316,	5.78956)
+  beta3 ~ dlnorm(-0.5163699,	4.5480065)
+
+#Prioris não informativas
+  tau2  ~ dgamma(0.1, 0.001)  
+  P1 ~ dunif(-1,1)
+  P2 ~ dunif(-1,1)  
+
+  #variancia
+  sigma2<-1/tau2
+
+#Valores preditos
+  for( i in 1 : N ) {
+    yp[i] <- beta1/(1+exp(-beta3*(xr[i]-beta2)))+P1*e1_b1[i]+P2*e2_b2[i]
+    d[i]<- yp[i]-yr[i]
+    d2[i]<- d[i]*d[i]
+    dr[i]<- d[i]/yr[i]
+  }
+
+syp2<-pow(sd(yp[]),2)  
+R2B <- syp2/(syp2+sigma2) 
+EQM<- sum(d2[])/N #erro quadratico medio
+VMR<- abs(sum(dr[])*100/N) #modulo do vies medio relativo
+desvio<- sum(d[])/N #desvio bruto
+}
+",fill=TRUE)
+    sink()    
+    xr<- reamostra$x2
+    yr<- reamostra$y2
+    e1_b1<- reamostra$e1_b1
+    e2_b2<- reamostra$e2_b2
+    N     = length(xr)
+    data  =  list("xr","yr","e1_b1","e2_b2","N") #dados
+    inits =  function(){
+      list(beta1=1,beta2=1,beta3=1,P1=0,P2=0,tau2=1) #valores iniciais
+    }    
+    theta<-c("beta1","beta2","beta3","P1","P2","tau2") #parametros
+    
+    patchouli_inf.log = bugs(data,inits,
+                             model.file="Patchouli_Inf.txt", #modelo openbugs
+                             parameters=c(theta,"R2B","EQM","VMR","desvio","yp"), #parametros da saida
+                             n.chains=1,n.iter=30000,n.burnin=20000,n.thin=50,  #configuracoes das cadeias
+                             codaPkg=FALSE,debug=F) #comando codaPkg=FALSE para salvar as medias do y predito em um objeto
+                             #dubug=T mostra a janela para verificar se o modelo esta correto e em andamento
+
+    #Cadeia a posteriori
+    post.log<-as.mcmc(patchouli_inf.log$sims.matrix[,]) # salva a saida como cadeia mcmc
+    post<- summary(post.log)
+    
+    #--------------------------
+    # Criterios de convergencia
+    #--------------------------
+    gk<-geweke.diag(post.log) #Valor do criterio de Geweke
+    rft<-raftery.diag(post.log) #Valor do fator de dependencia de Rafterey-Lewis
+    hw<-heidel.diag(post.log) #Valor-p do teste de Heideberger-Welch
+    
+    #--------------------------
+    #Intervalo HPD 95
+    #--------------------------
+    hpd<-HPDinterval(post.log)
+    
+    #--------------------------
+    # Resumo DIC
+    #--------------------------
+    resumo=(patchouli_inf.log)
+    
+    #------------------------------------
+    # Construcao da matriz de resultados
+    #------------------------------------
+    R<-matrix(0,1,91)
+    R[,1]<-post[[1]][[1]] #Media de beta1
+    R[,2]<-post[[1]][[2]] #Media de beta2
+    R[,3]<-post[[1]][[3]] #Media de beta3
+    R[,4]<-post[[1]][[4]] #Media de P1
+    R[,5]<-post[[1]][[5]] #Media de P2
+    R[,6]<-post[[1]][[6]] #Media de tau
+    R[,7]<-post[[1]][[7]] #Media de R2
+    R[,8]<-post[[1]][[8]] #Media de EQM
+    R[,9]<-post[[1]][[9]] #Media de VMR absoluto
+    R[,10]<-post[[1]][[10]] #Media do desvio medio bruto
+    R[,11]<- resumo$DIC    #DIC
+    
+    R[,12]<-post[[1]][[39]] #Desvio padrao de beta1
+    R[,13]<-post[[1]][[40]] #Desvio padrao de beta2
+    R[,14]<-post[[1]][[41]] #Desvio padrao de beta3
+    R[,15]<-post[[1]][[42]] #Desvio padrao de P1
+    R[,16]<-post[[1]][[43]] #Desvio padrao de P2
+    R[,17]<-post[[1]][[44]] #Desvio padrao de tau
+    R[,18]<-post[[1]][[45]] #Desvio padrao de R2
+    R[,19]<-post[[1]][[46]] #Desvio padrao de EQM
+    R[,20]<-post[[1]][[47]] #Desvio padrao de VMR absoluto 
+    R[,21]<-post[[1]][[48]] #Desvio padrao do desvio bruto medio
+    
+    R[,22]<-(R[,12]/R[,1])*100 #CV de beta1
+    R[,23]<-(R[,13]/R[,2])*100 #CV de beta2
+    R[,24]<-(R[,14]/R[,3])*100 #CV de beta3
+    R[,25]<-(R[,15]/R[,4])*100 #CV de P2
+    R[,26]<-(R[,16]/R[,5])*100 #CV de P1
+    R[,27]<-(R[,17]/R[,6])*100 #CV de tau
+    R[,28]<-(R[,18]/R[,7])*100 #CV de R2
+    R[,29]<-(R[,19]/R[,8])*100 #CV de EQM
+    R[,30]<-(R[,20]/R[,9])*100 #CV de VMR absoluto
+    R[,31]<-(R[,21]/R[,10])*100 #CV de desvio bruto medio
+    
+    R[,32]<-post[[2]][[77]] #Mediana de beta1
+    R[,33]<-post[[2]][[78]] #Mediana de beta2
+    R[,34]<-post[[2]][[79]] #Mediana de beta3
+    R[,35]<-post[[2]][[80]] #Mediana de P2
+    R[,36]<-post[[2]][[81]] #Mediana de P1
+    R[,37]<-post[[2]][[82]] #Mediana de tau
+    R[,38]<-post[[2]][[83]] #Mediana de R2
+    R[,39]<-post[[2]][[84]] #Mediana de EQM
+    R[,40]<-post[[2]][[85]] #Mediana de VMR absoluto
+    R[,41]<-post[[2]][[86]] #Mediana do desvio bruto medio
+    
+    R[,42]<-hpd[[1]] #Limite inferior do HPD de beta1
+    R[,43]<-hpd[[39]] #Limite superior do HPD de beta1
+    R[,44]<-hpd[[2]] #Limite inferior do HPD de beta2
+    R[,45]<-hpd[[40]] #Limite superior do HPD de beta2
+    R[,46]<-hpd[[3]] #Limite inferior do HPD de beta3
+    R[,47]<-hpd[[41]] #Limite superior do HPD de beta3
+    R[,48]<-hpd[[4]] #Limite inferior do HPD de P1
+    R[,49]<-hpd[[42]] #Limite superior do HPD de P1
+    R[,50]<-hpd[[5]] #Limite inferior do HPD de P2
+    R[,51]<-hpd[[43]] #Limite superior do HPD de P2
+    R[,52]<-hpd[[6]] #Limite inferior do HPD de tau
+    R[,53]<-hpd[[44]] #Limite superior do HPD de tau
+    R[,54]<-hpd[[7]] #Limite inferior do HPD de R2
+    R[,55]<-hpd[[45]] #Limite superior do HPD de R2
+    R[,56]<-hpd[[8]] #Limite inferior do HPD de EQM
+    R[,57]<-hpd[[46]] #Limite superior do HPD de EQM
+    R[,58]<-hpd[[9]] #Limite inferior do HPD de VMR
+    R[,59]<-hpd[[47]] #Limite superior do HPD de VMR
+    R[,60]<-hpd[[10]] #Limite inferior do HPD de desvio
+    R[,61]<-hpd[[48]] #Limite superior do HPD de desvio
+    
+    R[,62]<-abs(gk[[1]][[1]]) #Valor do crit. de Geweke para beta1
+    R[,63]<-abs(gk[[1]][[2]]) #Valor do crit. de Geweke para beta2
+    R[,64]<-abs(gk[[1]][[3]]) #Valor do crit. de Geweke para beta3
+    R[,65]<-abs(gk[[1]][[4]]) #Valor do crit. de Geweke para P1
+    R[,66]<-abs(gk[[1]][[5]]) #Valor do crit. de Geweke para P2
+    R[,67]<-abs(gk[[1]][[6]]) #Valor do crit. de Geweke para tau
+    R[,68]<-abs(gk[[1]][[7]]) #Valor do crit. de Geweke para R2
+    R[,69]<-abs(gk[[1]][[8]]) #Valor do crit. de Geweke para EQM
+    R[,70]<-abs(gk[[1]][[9]]) #Valor do crit. de Geweke para VMR
+    R[,71]<-abs(gk[[1]][[10]]) #Valor do crit. de Geweke para desvio
+    
+    R[,72]<-rft[[2]][[115]] #Valor do crit. de Raftery para beta1
+    R[,73]<-rft[[2]][[116]] #Valor do crit. de Raftery para beta2
+    R[,74]<-rft[[2]][[117]] #Valor do crit. de Raftery para beta3
+    R[,75]<-rft[[2]][[118]] #Valor do crit. de Raftery para P1
+    R[,76]<-rft[[2]][[119]] #Valor do crit. de Raftery para P2
+    R[,77]<-rft[[2]][[120]] #Valor do crit. de Raftery para tau
+    R[,78]<-rft[[2]][[121]] #Valor do crit. de Raftery para R2
+    R[,79]<-rft[[2]][[122]] #Valor do crit. de Raftery para EQM
+    R[,80]<-rft[[2]][[123]] #Valor do crit. de Raftery para VMR
+    R[,81]<-rft[[2]][[124]] #Valor do crit. de Raftery para desvio
+    
+    R[,82]<-hw[[77]] #Valor-p do teste de Heideberg. para beta1
+    R[,83]<-hw[[78]] #Valor-p do teste de Heideberg. para beta2
+    R[,84]<-hw[[79]] #Valor-p do teste de Heideberg. para beta3
+    R[,85]<-hw[[80]] #Valor-p do teste de Heideberg. para P1
+    R[,86]<-hw[[81]] #Valor-p do teste de Heideberg. para P2
+    R[,87]<-hw[[82]] #Valor-p do teste de Heideberg. para tau
+    R[,88]<-hw[[83]] #Valor-p do teste de Heideberg. para R2
+    R[,89]<-hw[[84]] #Valor-p do teste de Heideberg. para EQM
+    R[,90]<-hw[[85]] #Valor-p do teste de Heideberg. para VMR
+    R[,91]<-hw[[86]] #Valor-p do teste de Heideberg. para desvio
+    
+    #Nomeando as colunas da matriz de resultados
+    dimnames(P)<-list(c(),c("Media_beta1","Media_beta2","Media_beta3","Media_P1","Media_P2","Media_tau","Media_R2","Media_EQM","Media_VMR","Media_desvio","DIC",
+                            "DP_beta1","DP_beta2","DP_beta3","DP_P1","DP_P2","DP_tau","DP_R2","DP_EQM","DP_VMR","DP_desvio",
+                            "CV_beta1","CV_beta2","CV_beta3","CV_P1","CV_P2","CV_tau","CV_R2","CV_EQM","CV_VMR","CV_desvio",
+                            "Mediana_beta1","Mediana_beta2","Mediana_beta3","Mediana_P1","Mediana_P2","Mediana_tau","Mediana_R2","Mediana_EQM","Mediana_VMR","Mediana_desvio",
+                            "LI_beta1","LS_beta1", "LI_beta2","LS_beta2","LI_beta3","LS_beta3","LI_P1","LS_P1","LI_P2","LS_P2","LI_tau","LS_tau","LI_R2","LS_R2",
+                            "LI_EQM","LS_EQM", "LI_VMR","LS_VMR","LI_desvio","LS_desvio",
+                            "GWK_beta1","GWK_beta2","GWK_beta3","GWK_P1","GWK_P2","GWK_tau","GWK_R2","GWK_EQM","GWK_VMR","GWK_desvio",
+                            "RFT_beta1","RFT_beta2","RFT_beta3","RFT_P1","RFT_P2","RFT_tau","RFT_R2","RFT_EQM","RFT_VMR","RFT_desvio",
+                            "HDW_beta1","HDW_beta2","HDW_beta3","HDW_P1","HDW_P2","HDW_tau","HDW_R2","HDW_EQM","HDW_VMR","HDW_desvio"))
+    P[i,]<- R #fim do loop
+    
+    #Salvando os resultados a cada 50 reamostras
+    if(i %% 50 == 0){ 
+      arquivo<- paste0("C:\\Users\\Aluno\\Documents\\Mariana\\Patchouli\\Saida 1\\Patchouli_n3_LN_Vismara_tau0.5_",i,".csv")
+      #Armazenando saida
+      write.csv(P,file=arquivo) #Alterar nome do arquivo
+    }
+    
+  } #Fecha o for
+#Salvando o arquivo final
+write.csv(P,file="C:\\Users\\Aluno\\Documents\\Mariana\\Patchouli\\Saida 2\\Patchouli_n3_LN_Vismara_tau0.5_100.csv") #Alterar nome do arquivo
+
+} #Fecha a funcao
+
+#Funcao que mede o tempo de execucao
+system.time(simulac(100))
+
